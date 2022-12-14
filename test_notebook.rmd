@@ -1,0 +1,140 @@
+---
+output: officedown::rdocx_document
+---
+```{r, echo=FALSE,include=FALSE}
+
+# Source functions to do forecasts, tables of results, and plots.
+source("functions.R")
+
+# Pull in needed packages.
+library(flextable)
+library(tidyverse)
+library(htmltools)
+library(knitr)
+library(officedown)
+library(officer)
+library(readxl)
+library(dlm)
+library(Metrics)
+library(here)
+
+# Print session info at end of document for reproducibility?
+prnt_info <- TRUE
+
+# Pull in brood or return table ####
+# This table needs to have headers named exactly, NO SPACES!), but order doesnt matter. 
+# ReturnYear (or BroodYear), AgeX1,AgeX2...AgeXmax, Stock
+# e.g. the header looks like: ReturnYear | Age2 | Age3 | Age4 | Stock
+# If this is a brood table, be sure to specify the na's if they are not just blank cells.
+# df <- read_xlsx("klick2019.xlsx",sheet=1)
+#df <- read_xlsx("CKL_2019.xlsx", sheet=1)
+#df <- read_xlsx("Input_TAC_Forecasting_Spring_Summer_Chinook.xlsx", sheet="ReturnTable")
+# df <- read_xlsx("2019ReturnTable.xlsx",sheet=1) #%>% mutate_at(vars(contains("Age")), ~round(.x*1000))
+#df <- read_xlsx("2019LRBReturnTable.xlsx",sheet=1)#%>% mutate_at(vars(contains("Age")),~if_else(.x==0,.001,.x))
+
+# OUTPUT Brood and Return tables for RoundTable
+library(openxlsx)
+# rt <- df
+# bt <- df %>% return_to_brood()
+# 
+# write.xlsx(list(Return=rt,Brood=bt),file="2021BroodTables.xlsx") 
+# df %>% select(Stock,ReturnYear,Age2,Age3,Age4,Age5,Age6) %>% return_to_brood() %>% write.table("clipboard",row.names=FALSE)
+
+# df<-readxl::read_xlsx(here("Data","2023","Basic Brood Tables for WDFW.xlsx"),sheet="RY") %>%   mutate(across(Age3:Age5,function(x)ifelse(x==0,.5,x))) %>% rename(Stock=River)
+
+df<-readxl::read_xlsx(here("Data","2023","UpperC_Chk.xlsx"),sheet=1) %>% select(-Age3) %>% 
+  rename(ReturnYear=Year,
+         Age3=JackHalf) %>% 
+  mutate(Stock="Upper_C_SpChk") #%>% 
+  # select(-JackHalf)
+
+  
+
+
+# df<-readxl::read_xlsx(here("CKL_2019.xlsx"),sheet=1)%>%
+# df<-readxl::read_xlsx(here("Data","2023","UpriverSprings.xlsx"),sheet=1)%>%
+# # df<-readxl::read_xlsx(here("Data","2023","SummerChinook.xlsx"),sheet=1)%>%
+#   #change 0 to .5
+#   mutate(across(Age3:Age6,function(x)ifelse(x==0,.5,x))) %>%
+#   rename("BroodYear"=`Brood Year`) %>%
+#   brood_to_return()
+
+# write_csv(df,here("Data","2023","SummerReturns.csv"))
+
+
+# Do forecasts ####
+# table type is either "return" or "brood". Return tables are converted to brood tables.
+o <- do_forecasts(df, table_type="return")
+#o %>% mod_avg_totals(stock = "Cowlitz")
+#o %>% mod_avg_totals(stock="LRH")
+# Extract stocks/ages and forecast year ####
+stocks <- unique(o$ModelSelectionResults$Stock)
+
+ages <- unique(o$ModelSelectionResults$Age)
+
+forecast_year <- o$Predictions %>% 
+  mutate(ReturnYear=BroodYear+Age) %>% 
+  pull(ReturnYear) %>% 
+  max()
+
+```
+
+---
+title: `r forecast_year` Forecasts for `r paste(stocks)`
+---
+
+# Model Descriptions
+A suite of 8 models are run for each brood table provided.  The 8 models are variants of sibling regressions, cohort ratios, and average returns.
+
+```{r,echo=FALSE}
+# Put in table of model descriptions.
+read_xlsx("model_descriptions.xlsx",sheet=1) %>% 
+  flextable() %>% 
+  align(align="left", part="all") %>% 
+  autofit()
+```
+
+Performance metrics (MSA,RMSE, MAPE), and prediction intervals are based on 10 years of retrospective one-year-ahead forecasts (i.e., 2013-2022).
+
+```{r,results='asis',echo=FALSE,warning=FALSE,message=FALSE,fig.width=7,fig.height=5,dpi=300,fig.align='center'}
+  cat("<br><br><br><br><br>\n\n\n")
+
+for(s in stocks){
+
+  cat(paste("##", s," returns by age class <br><br>\n\n"))
+  print(plot_returns(o, s))
+  cat("<!---CHUNK_PAGEBREAK--->\n\n")
+  for (a in ages ){
+
+    cat(paste("##",s, "Age",a),"model selection\n\n")
+    tbl <- make_mod_sel_tbl(o, stock=s, age=a)
+    #tbl
+    # If html output
+     cat(knit_print(tbl),"<br>","\n\n")
+    # If word output
+    #  flextable::docx_value(tbl)
+      cat("\n\n")
+      print(plot_preds(o, stock=s, age=a))
+      cat("<!---CHUNK_PAGEBREAK--->\n\n")
+
+  }
+    cat(paste("##", s, "model-averaged forecasts for", forecast_year,"\n\n"))
+    #docx_value(mod_avg_totals_ft(o, stock=s))
+    tbl2 <- mod_avg_totals_ft(o,stock=s)
+    cat(knit_print(tbl2),"<br>","\n\n")
+    #cat("<br><br>\n\n")
+  print(plot_tots(o, stock=s))
+ if(prnt_info | s != stocks[length(stocks)]){cat("<!---CHUNK_PAGEBREAK--->\n\n")}
+}
+
+```
+
+```{r,echo=FALSE, eval=prnt_info, results='asis'}
+# If prnt_info, make a header 
+cat("## R Session Info\n\n")
+```
+
+```{r, echo=FALSE, eval=prnt_info, comment=NA}
+#Paste in the session info
+sessionInfo()
+```
