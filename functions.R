@@ -136,15 +136,26 @@ list(constIntOnly=constIntOnly,
 
 # Estimate model params by MLE ####
 est_parms <- function(npar, yt, xt, build_fns){
-    
-  fits <- lapply(1:length(npar), function(x){ 
+
+  fits <- try(lapply(1:length(npar), function(x){ 
           parm <- rep(0, npar[x])
           
         if(grepl(names(build_fns[x]),pattern="IntOnly")){
           xt <- rep(1,length(xt))}
-          dlmMLE(y=yt, x.mat=xt, parm=parm, build=build_fns[[x]], hessian=T)
+          dlmMLE(y=yt, x.mat=xt, parm=parm, build=build_fns[[x]], hessian=F,debug = FALSE)
           
-          })
+          }))
+  
+  if(class(fits)=="try-error"){
+    fits <- (lapply(1:length(npar), function(x){ 
+      parm <- rep(0, npar[x])
+      
+      if(grepl(names(build_fns[x]),pattern="IntOnly")){
+        xt <- rep(1,length(xt))}
+      dlmMLE(y=yt, x.mat=xt, parm=parm, build=build_fns[[x]], hessian=F,debug = TRUE)
+      
+    }))
+  }
      lapply(fits,"[[","par")
 }
 
@@ -218,17 +229,20 @@ ICs <-   lapply(1:length(mods), function(x){
 }
 
 ## Function to calculate intervals for forecasts ####
-CIs <- function(fm,BY){
- 
+CIs <- function(fm,Y_obs,BY){
   # MAKE SURE TO SOURCE THIS from 'dlm_resid_fixed.R' FOR THE DEBUGGED VERSION
-  sds <- residuals.dlmFiltered(fm, type="raw")$sd
+  # sds <- residuals.dlmFiltered(fm, type="raw")$sd
 
-# Forecast
-  fore <- fm$f
-
-  pred_mu <- exp(fore + 0.5 * sds^2)
-  pred_sd <- sqrt(exp(2*fore+sds^2)*(exp(sds^2)-1))
-  actual <- exp(fm$y)
+# log forecast
+  fore <- fm
+  #residuals
+  log_resd<-(Y_obs)-fm
+  #sample variance for prediction error
+  bias<-mean(log_resd,na.rm=T)
+  pred_sd<- sqrt(sum((log_resd-bias)^2,na.rm=T)/(sum(!is.na(log_resd))))
+  # pred_mu <- exp(fore + 0.5 * sds^2)
+  # pred_sd <- sqrt(exp(2*fore+sds^2)*(exp(sds^2)-1))
+  actual <- exp(Y_obs)
   
   alpha <- c(0.2, 0.1, 0.05)
   
@@ -240,13 +254,12 @@ CIs <- function(fm,BY){
   q <- c(lls,uls)
   
   lapply(seq_along(fore), function(x){
-    #cls <- qlnorm(q, mean=fore[x], sd=sds[x])
-    cls <- exp(qnorm(q, mean=fore[x], sd=sds[x]))
+    # cls <- qlnorm(q, mean=fore[x], sd=sds[x])
+    cls <- exp(qnorm(q, mean=fore[x]+bias, sd=pred_sd))
     names(cls) <- interval_names
     cls
-    }) %>% do.call(rbind,.) %>% 
-           cbind.data.frame(log_pred=fore, log_sd=sds, Pred_mu=pred_mu, Pred_med=exp(fore),actual,pred_sd=pred_sd,.) %>% 
-           select(log_pred,log_sd, Pred_mu, Pred_med, pred_sd, actual, starts_with("lcl_"), starts_with("ucl_")) %>%
+    }) %>% do.call(rbind,.) %>%
+          data.frame(log_pred=fore, Pred_med=exp(fore),actual) %>%
            mutate(APE=abs(Pred_med-actual)/actual,
                   SQE=(Pred_med-actual)^2,
                   Q=log(Pred_med/actual),
@@ -256,19 +269,22 @@ CIs <- function(fm,BY){
 }
 
 # Calculate error metrics- MdAPE, RMSE, MdLQ, MSA ####
-err.metrix <- function(filtered_mods, BY,age){ 
-  lapply(filtered_mods, CIs, BY) %>% 
+err.metrix <- function(filtered_mods,Y_obs, BY,age){ 
+  apply(filtered_mods,1,CIs,Y_obs,BY) %>% 
   do.call(rbind.data.frame,.) %>% 
   mutate(Mod=rownames(.)) %>% 
   separate(Mod,into=c("Model", NA)) %>% 
   mutate(ReturnYear=BroodYear+age) %>% 
   group_by(Model) %>% 
-    filter(is.finite(Pred_mu), !is.na(Pred_mu),ReturnYear>=2013) %>%  
-  summarise(MdAPE=median(APE, na.rm=TRUE), 
+    # filter(is.finite(Pred_med), !is.na(Pred_med),ReturnYear>=2013) %>%  
+  summarise( RMSE=sqrt(mean(SQE,na.rm=TRUE)),
+             MdAPE=median(APE, na.rm=TRUE), 
             MAPE=mean(APE, na.rm=TRUE)*100, 
-            RMSE=sqrt(mean(SQE,na.rm=TRUE)),
             MdLQ=median(Q, na.rm=TRUE),
-            MSA=100*(exp(median(abs(Q),na.rm=TRUE))-1))}
+            MSA=100*(exp(median(abs(Q),na.rm=TRUE))-1)) %>% 
+    ungroup %>% 
+    mutate(RMSE_wt=(1/RMSE)/sum(1/RMSE))
+    }
 
 # Wrapper to do forecasts and output list of results ####
 do_forecasts <- function(df, table_type=c("brood", "return")) {
@@ -276,7 +292,8 @@ do_forecasts <- function(df, table_type=c("brood", "return")) {
   table_type <- match.arg(table_type)
   if(table_type=="return"){bt <- return_to_brood(df)}
   else{bt <- df}
-
+data<-df
+  
   stocks <- unique(bt$Stock)
   ages <- find_ages_to_forecast(bt)
 
@@ -294,33 +311,50 @@ out <- list()
   # Total parms estimated for each model to calc AIC
   k_par <- vpar-1 + nbetas
   
-  # Prep xy data for models. Returns a list for each age class and stock
+# Loop to do forecasts for all stocks/ages  
+  for (i in 1:nrow(lut)){ 
+   modAge <- paste0("Age", lut$age[i])
+  stock <-as.character(lut$stock[i])
+  df1<-filter(data,Stock==stock)  
+  n_years<-nrow(df1)
+  forecasts<-matrix(nrow=8,ncol=n_years)  
+  
+  ##loop over return years to forecast (starting with 11th year)
+  for(years_head in 11:n_years){
+    df2<-head(df1,years_head)  
+    bt <- return_to_brood(df2)
+    
+    
+    # Prep xy data for models. Returns a list for each age class and stock
   o <- prep_xy(bt, ages=ages)
   
-# Loop to do forecasts for all stocks/ages  
-  for (i in 1:nrow(lut)){
-
-  modAge <- paste0("Age", lut$age[i])
-  stock <-as.character(lut$stock[i])
+ 
 
   df <- o %>% filter(Stock==lut$stock[i], model_Age==paste0("Age", lut$age[i]))
+  
+  
   BY <- df %>% pull(BroodYear)
   build_fns <- dlm_build_fns(x.mat=df$xt)
   fit_pars <- est_parms(npar=vpar, yt=df$yt, xt=df$xt, build_fns=build_fns)
   mods <- build_mods(build_fns=build_fns, fit_pars=fit_pars, xt=df$xt)
   filtered_mods <- filter_mods(mods, yt=df$yt)
-  smoothed_mods <- smooth_mods(mods, yt=df$yt)
+  
+  forecasts[1:8,years_head]<-unlist(lapply(filtered_mods, function(x){tail(x$f,1)}))
+  }
+  rownames(forecasts)<-names(filtered_mods)
 
+  
+  
 out[[i]] <- 
   list(
     
 modSelTable=IC_table(df$yt, mods, k_par) %>% 
-    left_join(err.metrix(filtered_mods,BY,age=lut$age[i]), by="Model") %>% 
+    left_join(err.metrix(forecasts[,1:length(df$yt)],df$yt,BY,age=lut$age[i]), by="Model") %>% 
               mutate(Stock=stock, Age=modAge) %>% 
   separate(Age, c(NA, "Age"), -1) %>% 
   mutate(Age=as.numeric(Age)),
 
-Preds=lapply(filtered_mods, CIs, BY) %>% 
+Preds=apply(forecasts[,1:length(df$yt)],1, CIs,df$yt, BY) %>% 
   do.call(rbind,.) %>% 
   mutate(Mod=rownames(.)) %>% 
   separate(Mod,into=c("Model",NA)) %>% 
@@ -346,24 +380,25 @@ make_mod_sel_tbl <- function(o, stock, age){
     rename(Forecast=Pred_med) %>% #lapply(class)
   left_join(o$ModelSelectionResults,by=c("Model"="Model", "Stock"="Stock","Age"="Age" ))%>%
     group_by(Stock,Age) %>% 
-    arrange(Age,AICc) %>% 
+    arrange(Age,RMSE) %>% 
     select(-BIC,-BIC_wt,-MdAPE) %>% 
-    mutate(AICc_wt=round(AICc_wt, 2)) %>% 
-    mutate_at(vars("Forecast","lcl_95","ucl_95"),~round(.x,2)) %>% 
-  flextable::flextable(col_keys=c("Model","npar","AICc","AICc_wt","MdLQ",
-                                  
-                                  "Forecast","MAPE","RMSE","MSA","lcl_95","ucl_95")) %>% 
+    mutate(AICc_wt=round(AICc_wt, 3),
+           RMSE_wt=round(RMSE_wt,3)) %>% 
+    mutate_at(vars("Forecast"#,"lcl_95","ucl_95"
+                   ),~round(.x,2)) %>% 
+  flextable::flextable(col_keys=c("Model","npar","Forecast","RMSE","RMSE_wt","lcl_95","ucl_95","AICc","AICc_wt")) %>% 
   flextable::colformat_int(j=c("npar")) %>% 
   flextable::bold(j=1) %>% 
-    flextable::bold(j=c(1,6),part="header") %>% 
+    flextable::bold(j=c(1,3),part="header") %>% 
   flextable::colformat_int(j="npar") %>% 
     flextable::width(j=6,width=.6) %>%
     flextable::width(j=1,width=1) %>% 
     flextable::width(j=2,width=0.5) %>% 
-  flextable::colformat_double(j=c("AICc","Forecast","RMSE",
-                                  "lcl_95","ucl_95"),digits=1) %>%
+  flextable::colformat_double(j=c("AICc","Forecast","RMSE"#,
+                                  # "lcl_95","ucl_95"
+                                  ),digits=1) %>%
     #flextable::colformat_num(col_keys=c("Forecast","lcl_95","ucl_95"),digits=1) %>%  
-  flextable::colformat_double(j=c("AICc_wt","MdLQ","MAPE","MSA"),digits=3) %>%  
+  flextable::colformat_double(j=c("AICc_wt","RMSE_wt"),digits=3) %>%  
     #flextable::colformat_num(col_keys=c("MdLQ"),digits=2) %>% 
   flextable::fontsize(j=2,size=8) %>%
   flextable::fontsize(size=8,part="body") %>% 
@@ -380,40 +415,49 @@ make_mod_sel_tbl <- function(o, stock, age){
 
 # Functionto calculate total forecast ####
 mod_avg_totals <- function(o,stock){
- 
+ test<-
 o$Predictions %>% mutate(ReturnYear=BroodYear+Age) %>%  filter(Stock==stock) %>% 
   # Join to the Model selection 
   left_join(o$ModelSelectionResults, by=c("Model", "Stock", "Age")) %>% 
-  select(Stock, Age,ReturnYear, Model, log_pred, log_sd, AICc_wt, BIC_wt,actual) %>% 
-  group_by(Stock, Age, ReturnYear,actual) %>% 
-  summarise(wtd_log_pred=sum(AICc_wt * log_pred),
-            wtd_log_sd=sum(AICc_wt * sqrt(log_sd^2 + (log_pred - wtd_log_pred)^2))) %>%
   
-        mutate(Pred_mu=exp(wtd_log_pred + 0.5*wtd_log_sd^2),
-               Pred_med=exp(wtd_log_pred),
-               lcl_95=qlnorm(.025,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               ucl_95=qlnorm(.975,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               lcl_80=qlnorm(0.10,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               ucl_80=qlnorm(0.90,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               lcl_50=qlnorm(0.25,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               ucl_50=qlnorm(0.75,meanlog=wtd_log_pred, sdlog=wtd_log_sd)
-               
+  group_by(Stock, Age, ReturnYear,actual) %>% 
+    # mutate(RMSE_wt=(1/RMSE)/sum(1/RMSE)) %>% 
+    select(Stock, Age,ReturnYear, Model, log_pred, #log_sd, 
+           AICc_wt, BIC_wt,RMSE_wt,actual) %>% 
+  summarise(wtd_log_pred=sum(RMSE_wt * log_pred)#,
+            #wtd_log_sd=sum(AICc_wt * sqrt(log_sd^2 + (log_pred - wtd_log_pred)^2))
+            ) %>%
+  
+        mutate(#Pred_mu=exp(wtd_log_pred + 0.5*wtd_log_sd^2),
+               Pred_med=exp(wtd_log_pred)#,
+               # lcl_95=qlnorm(.025,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
+               # ucl_95=qlnorm(.975,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
+               # lcl_80=qlnorm(0.10,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
+               # ucl_80=qlnorm(0.90,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
+               # lcl_50=qlnorm(0.25,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
+               # ucl_50=qlnorm(0.75,meanlog=wtd_log_pred, sdlog=wtd_log_sd)
+               # 
                ) %>% 
   
-   select(Stock, Age, Pred_mu, Pred_med,ReturnYear,actual, contains("cl_")) %>% 
+   select(Stock, Age,# Pred_mu,
+          Pred_med,ReturnYear,actual, contains("cl_")) %>% 
   ungroup %>%
   group_by(Stock,ReturnYear) %>%
     summarise (  Pred_med=sum(Pred_med),
                  actual=sum(actual)) %>% 
-    ungroup %>% 
-    mutate(log_resid=log(Pred_med)-log(actual),sd=lag(zoo::rollapplyr(log_resid,10,function(x){sqrt(sum(x^2)/(length(x)-1))},fill=NA)),
+    group_by(Stock) %>% 
+    mutate(log_resid=log(actual)-log(Pred_med),
+           log_bias=mean(log_resid,na.rm=T),
+           sd=sd(log_resid,na.rm=T),
+             #lag(zoo::rollapplyr(log_resid,10,function(x){sqrt(sum(x^2)/(length(x)-1))},fill=NA)
+                                                  
 
-           lcl_95=exp(qnorm(.025,log(Pred_med),sd)),
-           ucl_95=exp(qnorm(.975,log(Pred_med),sd)),
-           lcl_80=exp(qnorm(.1,log(Pred_med),sd)),
-           ucl_80=exp(qnorm(.9,log(Pred_med),sd)),
-           lcl_50=exp(qnorm(.25,log(Pred_med),sd)),
-           ucl_50=exp(qnorm(.75,log(Pred_med),sd))) %>% 
+           lcl_95=exp(qnorm(.025,log(Pred_med)+log_bias,sd)),
+           ucl_95=exp(qnorm(.975,log(Pred_med)+log_bias,sd)),
+           lcl_80=exp(qnorm(.1,log(Pred_med)+log_bias,sd)),
+           ucl_80=exp(qnorm(.9,log(Pred_med)+log_bias,sd)),
+           lcl_50=exp(qnorm(.25,log(Pred_med)+log_bias,sd)),
+           ucl_50=exp(qnorm(.75,log(Pred_med)+log_bias,sd))) %>% 
     select(Stock,ReturnYear,Forecast=Pred_med,lcl_95:ucl_50) %>% 
 
   mutate_if(is.numeric, round, 3) %>% as.data.frame
@@ -427,46 +471,52 @@ age_forecasts <- o$Predictions %>%
   mutate(ReturnYear=BroodYear+Age) %>% 
   filter(Stock==stock) %>% #, is.na(actual)) %>%
   left_join(o$ModelSelectionResults, by=c("Model", "Stock", "Age")) %>%
-  select(Stock,ReturnYear, actual,Age, Model, log_pred, log_sd, AICc_wt, BIC_wt) %>%
-  group_by(Stock, Age,ReturnYear,actual) %>%
-  summarise(wtd_log_pred=sum(AICc_wt * log_pred),
-            wtd_log_sd=sum(AICc_wt * sqrt(log_sd^2 + (log_pred - wtd_log_pred)^2))) %>%
 
-        mutate(Pred_mu=exp(wtd_log_pred + 0.5*wtd_log_sd^2),
-               Pred_med=exp(wtd_log_pred),
-               lcl_95=qlnorm(.025,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               ucl_95=qlnorm(.975,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               lcl_80=qlnorm(0.10,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               ucl_80=qlnorm(0.90,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               lcl_50=qlnorm(0.25,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
-               ucl_50=qlnorm(0.75,meanlog=wtd_log_pred, sdlog=wtd_log_sd),
+  group_by(Stock, Age,ReturnYear,actual) %>%
+
+  select(Stock,ReturnYear, actual,Age, Model, log_pred, #log_sd,
+         AICc_wt, BIC_wt,RMSE_wt) %>%
+  summarise(wtd_log_pred=sum(RMSE_wt * log_pred),
+            #wtd_log_sd=sum(AICc_wt * sqrt(log_sd^2 + (log_pred - wtd_log_pred)^2))
+            ) %>%
+        mutate(Pred_med=exp(wtd_log_pred),
+               log_resid=log(actual)-log(Pred_med)
+               ) %>% 
+  group_by(Stock,Age) %>% 
+  mutate(log_bias=mean(log_resid,na.rm=T),
+         sd=sd(log_resid,na.rm=T),
+         
+         lcl_95=exp(qnorm(.025,log(Pred_med)+log_bias,sd)),
+         ucl_95=exp(qnorm(.975,log(Pred_med)+log_bias,sd)),
+         lcl_80=exp(qnorm(.1,log(Pred_med)+log_bias,sd)),
+         ucl_80=exp(qnorm(.9,log(Pred_med)+log_bias,sd)),
+         lcl_50=exp(qnorm(.25,log(Pred_med)+log_bias,sd)),
+         ucl_50=exp(qnorm(.75,log(Pred_med)+log_bias,sd)),
                Age=as.character(Age)
 
                ) %>%
+
+
+         
+         
+         
   
   bind_rows( group_by(.,Stock,ReturnYear) %>% 
               summarise (  Pred_med=sum(Pred_med),
                            actual=sum(actual)) %>% 
-                ungroup %>% 
-                mutate(
-                  log_resid=log(Pred_med)-log(actual),
-                  sd=lag(zoo::rollapplyr(log_resid,10,function(x){sqrt(sum(x^2)/(length(x)-1))},fill=NA)),
-
-              lcl_80=exp(qnorm(.1,log(Pred_med),sd)),
-              ucl_80=exp(qnorm(.9,log(Pred_med),sd)),
-              lcl_95=exp(qnorm(.025,log(Pred_med),sd)),
-              ucl_95=exp(qnorm(.975,log(Pred_med),sd)),
-              # lcl_60=exp(qnorm(.2,log(Pred_med),sd)),
-              # ucl_60=exp(qnorm(.8,log(Pred_med),sd)),
-              lcl_50=exp(qnorm(.25,log(Pred_med),sd)),
-              ucl_50=exp(qnorm(.75,log(Pred_med),sd))) %>% 
-                           # Pred_mu=sum(Pred_med),
-                           # lcl_80=sum(lcl_80),
-                           # ucl_80=sum(ucl_80),
-                           # lcl_95=sum(lcl_95),
-                           # ucl_95=sum(ucl_95),
-                           # lcl_60=sum(lcl_60),
-                           # ucl_60=sum(ucl_60)) 
+               group_by(Stock) %>% 
+               mutate(log_resid=log(actual)-log(Pred_med),
+                      log_bias=mean(log_resid,na.rm=T),
+                      sd=sd(log_resid,na.rm=T),
+                     
+                      lcl_95=exp(qnorm(.025,log(Pred_med)+log_bias,sd)),
+                      ucl_95=exp(qnorm(.975,log(Pred_med)+log_bias,sd)),
+                      lcl_80=exp(qnorm(.1,log(Pred_med)+log_bias,sd)),
+                      ucl_80=exp(qnorm(.9,log(Pred_med)+log_bias,sd)),
+                      lcl_50=exp(qnorm(.25,log(Pred_med)+log_bias,sd)),
+                      ucl_50=exp(qnorm(.75,log(Pred_med)+log_bias,sd))) %>% 
+               
+              
               mutate(Age="Total") ) %>% 
             
   group_by(Stock, Age,ReturnYear,actual) %>%
@@ -476,14 +526,15 @@ age_forecasts <- o$Predictions %>%
          SA=abs(log(actual/Pred_med))) %>% 
 group_by(Stock, Age) %>% 
          mutate(
-           across(c(SQE,APE,SA),function(x)ifelse(ReturnYear>=2013,x,NA)),
+         #   across(c(SQE,APE,SA),function(x)ifelse(ReturnYear>=2013,x,NA)),
          RMSE=sqrt(mean(SQE,na.rm=TRUE)),
          MAPE=mean(APE, na.rm=TRUE)*100,
          MSA = 100*(exp(mean(SA, na.rm=TRUE))-1)
          ) %>% 
   ungroup %>% 
     filter(is.na(actual))%>%
-  select(Stock, Age, Pred_mu, Pred_med,actual,RMSE,MAPE,MSA,ReturnYear, contains("cl_"))
+  select(Stock, Age, #Pred_mu, 
+         Pred_med,actual,RMSE,MAPE,MSA,ReturnYear, contains("cl_"))
 
 combined <- age_forecasts %>%
   # group_by(Stock) %>%
@@ -505,14 +556,14 @@ combined <- age_forecasts %>%
   as.data.frame() 
   
 combined %>%  select(-Stock) %>% 
-  flextable::flextable(col_keys=c("Age","Forecast","MAPE","RMSE","MSA", 
+  flextable::flextable(col_keys=c("Age","Forecast","RMSE",#"MAPE","MSA", 
                                   "lcl_95","ucl_95","lcl_50","ucl_50")) %>% 
   merge_v(j=1) %>% 
     #flextable::colformat_int(j=c("lcl_95","ucl_95","lcl_80","ucl_80")) %>% 
   flextable::colformat_double(j=c("Forecast","RMSE",
                                   "lcl_95","ucl_95","lcl_50","ucl_50"),digits=1) %>%
   #flextable::colformat_num(col_keys=c("Forecast","lcl_95","ucl_95"),digits=1) %>%  
-  flextable::colformat_double(j=c("MAPE","MSA"),digits=3) %>%  
+  # flextable::colformat_double(j=c("MAPE","MSA"),digits=3) %>%  
   border(i=nrow(combined),border.top=officer::fp_border(width=2),border.bottom=officer::fp_border(width=2)) %>% 
     flextable::autofit() 
 }
@@ -565,15 +616,15 @@ actuals <- o$Predictions %>%
 
 preds <- o$Predictions %>% filter(Stock==stock, is.na(actual)) %>%  
   left_join(o$ModelSelectionResults,by=c("Stock","Model","Age")) %>%#filter(AICc_wt>0) %>% 
-  select(Model,Age,AICc_wt,starts_with("lcl"),starts_with("ucl"),Pred_med,BroodYear) %>%
+  select(Model,Age,RMSE_wt,starts_with("lcl"),starts_with("ucl"),Pred_med,BroodYear) %>%
   mutate(ReturnYear=BroodYear+Age) %>% 
   filter(Age==age) %>% 
-  mutate(plot_helper=factor(x=AICc_wt, levels=sort(unique(AICc_wt),decreasing=FALSE),ordered=TRUE),
-         scaled_AIC_wt=AICc_wt/max(AICc_wt)*6)
+  mutate(plot_helper=factor(x=RMSE_wt, levels=sort(unique(RMSE_wt),decreasing=FALSE),ordered=TRUE),
+         scaled_AIC_wt=RMSE_wt/max(RMSE_wt)*6)
 
 # Variables for plot that depend on data
 # labels for models in the legend
-modlabs <- preds %>% select(Model,AICc_wt) %>% arrange(AICc_wt) %>% pull(Model)
+modlabs <- preds %>% select(Model,RMSE_wt) %>% arrange(RMSE_wt) %>% pull(Model)
 dotsizes <- preds$scaled_AIC_wt %>% sort()
 
 # Y axis label
