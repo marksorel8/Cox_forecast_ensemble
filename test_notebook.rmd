@@ -4,7 +4,7 @@ output: officedown::rdocx_document
 ```{r, echo=FALSE,include=FALSE}
 
 # Source functions to do forecasts, tables of results, and plots.
-source("functions.R")
+source("functions2.R")
 
 # Pull in needed packages.
 library(flextable)
@@ -18,7 +18,7 @@ library(dlm)
 library(Metrics)
 library(here)
 
-# Print session info at end of document for reproducibility?
+# Print session info at end of document for reproducibility? 
 prnt_info <- TRUE
 
 # Pull in brood or return table ####
@@ -29,7 +29,42 @@ prnt_info <- TRUE
 # df <- read_xlsx("klick2019.xlsx",sheet=1)
 #df <- read_xlsx("CKL_2019.xlsx", sheet=1)
 #df <- read_xlsx("Input_TAC_Forecasting_Spring_Summer_Chinook.xlsx", sheet="ReturnTable")
-# df <- read_xlsx("2019ReturnTable.xlsx",sheet=1) #%>% mutate_at(vars(contains("Age")), ~round(.x*1000))
+
+
+# df <- read_xlsx("Data/2023/2019ReturnTable.xlsx",sheet=1) %>% 
+#   mutate(Age6=replace_na(Age6,0),
+#     Age5=Age5+Age6) %>% 
+#   select(-Age6)
+# 
+#  df <- df %>% filter(Stock=="BPH") #%>% filter(ReturnYear>=1975)
+
+
+df <- read_xlsx("Spring_Chinook_Returns.xlsx", sheet=1) %>% 
+  mutate(Age6=replace_na(Age6,0),
+    # Age6=Age6+.001,
+    # Age5=Age5+Age6
+    ) %>%
+  select(-Age6) %>% 
+  filter(ReturnYear<=2023) #enter current return year here
+
+
+
+ # 
+ # upsprngs <- read_xlsx("Data/2023/UpriverSprings.xlsx",sheet=1) %>% 
+ #    mutate(Age6=replace_na(Age6,0),
+ #    Age5=Age5+lag(Age6)) %>%
+ #  select(-Age6) %>% rename(BroodYear=`Brood Year`)
+ # 
+ # 
+ # up_sums <- read_xlsx("Data/2023/SummerChinook.xlsx",sheet=1) %>% 
+ #    mutate(Age6=replace_na(Age6,0),
+ #    Age5=Age5+lag(Age6)) %>% 
+ #  select(-Age6) 
+ # 
+ # 
+ # df<-bind_rows(upsprngs,up_sums)
+
+ #%>% mutate_at(vars(contains("Age")), ~round(.x*1000))
 #df <- read_xlsx("2019LRBReturnTable.xlsx",sheet=1)#%>% mutate_at(vars(contains("Age")),~if_else(.x==0,.001,.x))
 
 # OUTPUT Brood and Return tables for RoundTable
@@ -42,29 +77,36 @@ library(openxlsx)
 
 # df<-readxl::read_xlsx(here("Data","2023","Basic Brood Tables for WDFW.xlsx"),sheet="RY") %>%   mutate(across(Age3:Age5,function(x)ifelse(x==0,.5,x))) %>% rename(Stock=River)
 
-df<-readxl::read_xlsx(here("Data","2023","UpperC_Chk.xlsx"),sheet=1) %>% select(-Age3) %>% 
-  rename(ReturnYear=Year,
-         Age3=JackHalf) %>% 
-  mutate(Stock="Upper_C_SpChk") #%>% 
-  # select(-JackHalf)
+# df<-readxl::read_xlsx(here("Data","2023","UpperC_Chk.xlsx"),sheet=1) %>% #select(-Age3) %>%
+#   rename(ReturnYear=Year) %>%
+#          # Age3=JackHalf) %>%
+#   mutate(Stock="Upper_C_SpChk") %>%
+#   select(-JackHalf)
 
   
 
 
-# df<-readxl::read_xlsx(here("CKL_2019.xlsx"),sheet=1)%>%
+# df<-readxl::read_xlsx(here("CKL_2019.xlsx"),sheet=1) %>%
+#   filter(Stock=="Wind")%>%
+    # select(-c(Age3,Age4)) %>% 
 # df<-readxl::read_xlsx(here("Data","2023","UpriverSprings.xlsx"),sheet=1)%>%
 # # df<-readxl::read_xlsx(here("Data","2023","SummerChinook.xlsx"),sheet=1)%>%
 #   #change 0 to .5
-#   mutate(across(Age3:Age6,function(x)ifelse(x==0,.5,x))) %>%
-#   rename("BroodYear"=`Brood Year`) %>%
-#   brood_to_return()
+  # mutate(across(Age3:Age6,function(x)ifelse(x==0,.5,x)))
 
 # write_csv(df,here("Data","2023","SummerReturns.csv"))
 
 
 # Do forecasts ####
 # table type is either "return" or "brood". Return tables are converted to brood tables.
-o <- do_forecasts(df, table_type="return")
+wt_type<-"MAPE_wt"
+o <- do_forecasts(df, table_type="return",n_eval=15,wt_type=wt_type)
+
+o$Predictions %>% filter(Mod=="constIntOnly",Age==4,BroodYear==2019)
+# test<-o$Predictions %>% filter(Mod!="MAPE_wt")%>% mutate(across(c(AICc_wt,MAPE_wt),~.x*Pred_med)) %>% 
+#   group_by(ReturnYear,Stock,Age)  summarise(across(c(AICc_wt,MAPE_wt),sum),actual=mean(actual)) %>% group_by(ReturnYear,Stock) %>% summarise(across(c(AICc_wt,MAPE_wt,actual),sum))  %>% drop_na() %>% write.csv("preds.csv")
+
+
 #o %>% mod_avg_totals(stock = "Cowlitz")
 #o %>% mod_avg_totals(stock="LRH")
 # Extract stocks/ages and forecast year ####
@@ -73,7 +115,7 @@ stocks <- unique(o$ModelSelectionResults$Stock)
 ages <- unique(o$ModelSelectionResults$Age)
 
 forecast_year <- o$Predictions %>% 
-  mutate(ReturnYear=BroodYear+Age) %>% 
+  # mutate(ReturnYear=BroodYear+Age) %>% 
   pull(ReturnYear) %>% 
   max()
 
@@ -94,18 +136,21 @@ read_xlsx("model_descriptions.xlsx",sheet=1) %>%
   autofit()
 ```
 
-Performance metrics (MSA,RMSE, MAPE), and prediction intervals are based on 10 years of retrospective one-year-ahead forecasts (i.e., 2013-2022).
+Performance metrics (MSA,RMSE, MAPE), and prediction intervals are based on retrospective one-year-ahead forecasts.
+
+Model averageing was done with `r wt_type`
 
 ```{r,results='asis',echo=FALSE,warning=FALSE,message=FALSE,fig.width=7,fig.height=5,dpi=300,fig.align='center'}
   cat("<br><br><br><br><br>\n\n\n")
 
 for(s in stocks){
-
+  cat('\\pagebreak')
   cat(paste("##", s," returns by age class <br><br>\n\n"))
-  print(plot_returns(o, s))
+  # print(plot_returns(o, s))
   cat("<!---CHUNK_PAGEBREAK--->\n\n")
+    cat('\\pagebreak')
   for (a in ages ){
-
+  # cat('\\pagebreak')
     cat(paste("##",s, "Age",a),"model selection\n\n")
     tbl <- make_mod_sel_tbl(o, stock=s, age=a)
     #tbl
@@ -118,9 +163,11 @@ for(s in stocks){
       cat("<!---CHUNK_PAGEBREAK--->\n\n")
 
   }
+    cat('\\pagebreak')
     cat(paste("##", s, "model-averaged forecasts for", forecast_year,"\n\n"))
-    #docx_value(mod_avg_totals_ft(o, stock=s))
-    tbl2 <- mod_avg_totals_ft(o,stock=s)
+    # docx_value(mod_avg_totals_ft(o, stock=s))
+    # tbl2_dat <- mod_avg_totals_ft2(o,stock=s)
+        tbl2 <- mod_avg_totals_ft(o,stock=s)
     cat(knit_print(tbl2),"<br>","\n\n")
     #cat("<br><br>\n\n")
   print(plot_tots(o, stock=s))
