@@ -899,8 +899,10 @@ plot_returns <- function(o, stock){
   #   bind_rows(df %>% filter(Stock==stock,ReturnYear>=min_yr) %>% select(ReturnYear,actual=Age2,Stock) %>% mutate(Age=2))
   # 
   
-  dat<-df %>% 
-    filter(Stock==stock) %>% 
+  dat<-df %>% #brood_to_return() %>% 
+    
+    filter(Stock==stock,ReturnYear<=2023) %>% 
+    
     pivot_longer(-c(Stock,ReturnYear),names_prefix = "Age",names_to = "Age",values_to = "actual")
   
   # Plot variables depending on dat
@@ -990,7 +992,7 @@ ggplot(data=actuals)+
   scale_y_continuous(labels=function(x)format(x,scientific=FALSE,big.mark=","))+
   theme(legend.key=element_blank())+
   #scale_x_continuous(limits=c(2000, NA))+
-  coord_cartesian(xlim=c(2004, 2023))+
+  coord_cartesian(xlim=c(2006, 2024))+
    guides(size = guide_legend(order=2,reverse=TRUE),
           color=guide_legend(order=2,reverse=TRUE),
           linetype=guide_legend(order=1,label.position="right"))
@@ -999,12 +1001,9 @@ ggplot(data=actuals)+
 
 # Plot Total forecast ####
 plot_tots <- function(o, stock){
-
   
   
-  
-  
- actuals_total <- o$Predictions %>% filter(Stock==stock,Mod==wt_type,Age==10,Pred_med>0) %>% 
+ actuals_total <- o$Predictions %>% filter(Stock==stock,Mod==wt_type,Age==10,Pred_med>0,ReturnYear>=(min(o$Predictions$ReturnYear)+1)) %>% 
       # mutate(ReturnYear=BroodYear+Age) %>% 
       group_by(Stock, Mod, ReturnYear) %>% 
       # summarise(Return=sum(actual)) %>% 
@@ -1035,7 +1034,7 @@ ylabel <- ifelse(any(actuals_total>2000,na.rm=TRUE),"Run size", "Run size (thous
     
   ylab(ylabel)+
     scale_y_continuous(labels=function(x)format(x,scientific=FALSE,big.mark=",")) + 
-    scale_x_continuous(minor_breaks=seq(1900,2022,1))+
+    scale_x_continuous(minor_breaks=seq(1900,2023,1))+
   xlab("Return year") +
   ggtitle(label=paste0(stock, " total adults"),subtitle= paste0("Ages ", paste(head(unique(o$Predictions$Age),-1),collapse=",")))+
       theme(plot.title=element_text(face="bold",size=16,hjust=.5),
