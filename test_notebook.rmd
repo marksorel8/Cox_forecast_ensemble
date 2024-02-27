@@ -31,35 +31,63 @@ prnt_info <- TRUE
 #df <- read_xlsx("Input_TAC_Forecasting_Spring_Summer_Chinook.xlsx", sheet="ReturnTable")
 
 
-# df <- read_xlsx("Data/2023/2019ReturnTable.xlsx",sheet=1) %>% 
-#   mutate(Age6=replace_na(Age6,0),
-#     Age5=Age5+Age6) %>% 
-#   select(-Age6)
+df <- read_csv("Data/2024/new_return_table_2023.csv") %>%
+  mutate(Age6=replace_na(Age6,0),
+    Age5=Age5+Age6) %>%
+  select(-Age6) %>% 
+  filter(Stock %in% c("BPH","LRW", "PUB",  "URB",  "LRH+","LRB")) %>% mutate(Stock=ifelse(Stock=="LRH+","LRH",Stock))
 # 
 #  df <- df %>% filter(Stock=="BPH") #%>% filter(ReturnYear>=1975)
 
+# 
+# df <- readxl::read_xlsx("Spring_Chinook_Returns.xlsx", sheet=1) %>%
+#   mutate(Age6=replace_na(Age6,0),
+#     # Age6=Age6+1#,
+#     Age5=Age5+Age6
+#     ) %>%
+#   select(-Age6) %>%
+#   filter(ReturnYear<=2023) #enter current return year here
 
-df <- read_xlsx("Spring_Chinook_Returns.xlsx", sheet=1) %>% 
-  mutate(Age6=replace_na(Age6,0),
-    # Age6=Age6+.001,
-    # Age5=Age5+Age6
-    ) %>%
-  select(-Age6) %>% 
-  filter(ReturnYear<=2023) #enter current return year here
+# df<-readxl::read_xlsx("Data/2024/Snake W Returns at BON.xlsx",skip=1) %>% `colnames<-`(c("BroodYear" ,"Age3" ,"Age4","Age5")) %>% mutate(Stock="Snake_wild",BroodYear=BroodYear-2) 
+
+
+#upper C wild
+# df <- readxl::read_xlsx("Data/2024/upperC_wild_sprng.xlsx",sheet=1) %>% dplyr::select(ReturnYear,Age3,Age4=Age4) %>% mutate(Stock="Up_C_wild") %>% drop_na()
+
+
+# df<-readxl::read_xlsx("Data/2024/sockeye.xlsx",sheet="RY")%>% 
+#   
+#   filter(River=="Wenatchee") %>% 
+#   mutate(Age4=Age4+Age3,
+#          across(Age3:Age5,function(x)ifelse(x==0,1,x))) %>% rename(Stock=River)
+
+
+#Sockeye
+# df<-readxl::read_xlsx("Data/2024/sockeye.xlsx",sheet="RY")%>%
+#   group_by(ReturnYear) %>% summarize(across(Age3:Age5,sum)) %>% pivot_longer(Age3:Age5,names_to = "age",values_to = "n")%>%
+#   group_by(ReturnYear) %>% mutate(props=proportions(n)) %>% left_join(readxl::read_xlsx("Data/2024/sockeye.xlsx",sheet="RMRS"),by=c("ReturnYear"="Year")) %>% mutate(n2=props*River_Mouth_Run_Size) %>% select(ReturnYear,age,n2) %>% pivot_wider(names_from = age,values_from = n2) %>% mutate(Stock="Sockeye") %>% mutate(Age4=Age4+Age3)
 
 
 
+
+
+#  # spring CHinook
+#  df <- read_xlsx("Data/2024/UpriverSprings.xlsx",sheet=1) %>%
+#     mutate(
+#       # Age6=replace_na(Age6,0),
+#     # Age5=Age5+lag(Age6)
+#     Age6=Age6+1
+#     ) %>%
+#   # select(-Age6)
+# rename(BroodYear=`Brood Year`)
  # 
- # upsprngs <- read_xlsx("Data/2023/UpriverSprings.xlsx",sheet=1) %>% 
+ # 
+ # df <- readxl::read_xlsx("Data/2024/SummerChinook.xlsx",sheet=1) %>%
  #    mutate(Age6=replace_na(Age6,0),
- #    Age5=Age5+lag(Age6)) %>%
- #  select(-Age6) %>% rename(BroodYear=`Brood Year`)
- # 
- # 
- # up_sums <- read_xlsx("Data/2023/SummerChinook.xlsx",sheet=1) %>% 
- #    mutate(Age6=replace_na(Age6,0),
- #    Age5=Age5+lag(Age6)) %>% 
- #  select(-Age6) 
+ #               Age6=Age6+1#,
+    # Age5=Age5+lag(Age6)
+    # ) #%>%
+ # select(-Age6)
  # 
  # 
  # df<-bind_rows(upsprngs,up_sums)
@@ -68,7 +96,7 @@ df <- read_xlsx("Spring_Chinook_Returns.xlsx", sheet=1) %>%
 #df <- read_xlsx("2019LRBReturnTable.xlsx",sheet=1)#%>% mutate_at(vars(contains("Age")),~if_else(.x==0,.001,.x))
 
 # OUTPUT Brood and Return tables for RoundTable
-library(openxlsx)
+# library(openxlsx)
 # rt <- df
 # bt <- df %>% return_to_brood()
 # 
@@ -99,12 +127,12 @@ library(openxlsx)
 
 # Do forecasts ####
 # table type is either "return" or "brood". Return tables are converted to brood tables.
-wt_type<-"MAPE_wt"
-o <- do_forecasts(df, table_type="return",n_eval=15,wt_type=wt_type)
+wt_type<-"RMSE_wt"
+o <- do_forecasts(df, table_type="return",n_eval=10,wt_type=wt_type)
 
-o$Predictions %>% filter(Mod=="constIntOnly",Age==4,BroodYear==2019)
+# o$Predictions %>% filter(Mod=="constIntOnly",Age==4,BroodYear==2019)
 # test<-o$Predictions %>% filter(Mod!="MAPE_wt")%>% mutate(across(c(AICc_wt,MAPE_wt),~.x*Pred_med)) %>% 
-#   group_by(ReturnYear,Stock,Age)  summarise(across(c(AICc_wt,MAPE_wt),sum),actual=mean(actual)) %>% group_by(ReturnYear,Stock) %>% summarise(across(c(AICc_wt,MAPE_wt,actual),sum))  %>% drop_na() %>% write.csv("preds.csv")
+#   group_by(ReturnYear,Stock,Age) %>%  summarise(across(c(AICc_wt,MAPE_wt),sum),actual=mean(actual)) %>% group_by(ReturnYear,Stock) %>% summarise(across(c(AICc_wt,MAPE_wt,actual),sum))  %>% drop_na() %>% write.csv("preds.csv")
 
 
 #o %>% mod_avg_totals(stock = "Cowlitz")
@@ -146,7 +174,7 @@ Model averageing was done with `r wt_type`
 for(s in stocks){
   cat('\\pagebreak')
   cat(paste("##", s," returns by age class <br><br>\n\n"))
-  # print(plot_returns(o, s))
+  print(plot_returns(o, s))
   cat("<!---CHUNK_PAGEBREAK--->\n\n")
     cat('\\pagebreak')
   for (a in ages ){
